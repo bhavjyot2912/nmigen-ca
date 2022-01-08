@@ -11,12 +11,11 @@ from nmigen.cli import main_parser, main_runner
 class Memory_stage(Elaboratable):
     def __init__(self):
         
-        #input
+        #inputs
         self.data_in = Signal(32) # data coming from decode stage which needs to be written to memory # input
         self.result = Signal(32)  # ALU ka result # input
         self.mem_imm = Signal(32)
-        self.reg_addr_in = Signal(5) # write register address got from decode stage
-        #reg_addr_in = reg_addr_out always
+        self.reg_addr_in = Signal(5) # write register address got from decode stage, reg_addr_in = reg_addr_out always
         
         self.inst_type = Signal(3)  # R, S, U etc.
         self.inst_type1 = Signal(11)  # 11 bit opcode + funct3 + funct7
@@ -26,10 +25,9 @@ class Memory_stage(Elaboratable):
 
         #intermediates
         self.address = Signal(32) # the address to be input in the Memory block, calculated in this stage itself
-        self.zeroes24 = Signal(24)
-        self.zeroes16 = Signal(16)
         #self.write = Signal(1)
         self.regfile = Array([Signal(32) for i in range(16)]) # 32x16 bits memory file
+        
         
         #outputs
         self.reg_addr_out = Signal(5) # write register address to be passed on ahead to writeback
@@ -44,6 +42,14 @@ class Memory_stage(Elaboratable):
         self.U_type = 0b101
         self.J_type = 0b110
         
+        '''
+        R-type: register-register
+        I-type: short immediates and loads
+        S-type: stores
+        B-type: conditional branches, a variation of S-type
+        U-type: long immediates
+        J-type: unconditional jumps, a variation of U-type
+        '''
 
         self.LUI = 0b0110111
         self.AUIPC = 0b0010111
@@ -87,49 +93,33 @@ class Memory_stage(Elaboratable):
 
     def elaborate(self, platform: Platform) -> Module:
         m = Module()
-               
+                    
         with m.Switch(self.inst_type):
+            m.d.sync += self.reg_addr_out.eq(self.reg_addr_in)
+            
             with m.Case(self.I_type):
                 with m.Switch(self.inst_type2):  
                     with m.Case(self.LB):
                         m.d.comb += self.address.eq(self.mem_imm+self.result)
-                        m.d.sync += self.data_out.eq(Cat(self.zeroes24, self.regfile[self.address[0:7]]))
-                        #m.d.sync += self.write.eq(0b0)
-                        m.d.sync += self.reg_addr_out.eq(self.reg_addr_in)
+                        m.d.sync += self.regfile[0x00000006].eq(0xAAAAAAAA) # used only while using the test bench
+                        m.d.sync += self.data_out.eq(Cat(self.regfile[self.address][0:8], Const(0x000000)))
+                        #self.write = 0b0
                     with m.Case(self.LH):
                         m.d.comb += self.address.eq(self.mem_imm+self.result)
-                        m.d.sync += self.data_out.eq(Cat(self.zeroes16, self.regfile[self.address[0:15]]))
+                        m.d.sync += self.data_out.eq(Cat(self.regfile[self.address[0:16]], Const(0x0000)))
                         #self.write = 0b0  
-                        m.d.sync += self.reg_addr_out.eq(self.reg_addr_in)  
                     with m.Case(self.LW):
                         m.d.comb += self.address.eq(self.mem_imm+self.result)
                         #self.write = 0b0
                         m.d.sync += self.data_out.eq(self.regfile[self.address])
-                        m.d.sync += self.reg_addr_out.eq(self.reg_addr_in)
                     with m.Case(self.LBU):
-                        m.d.comb += self.address.eq(self.mem_imm+self.result)
-                        m.d.sync += self.data_out.eq(Cat(Repl(self.regfile[self.address[31]], 24), self.regfile[self.address[0:7]]))
+                        m.d.comb += self.address.eq(self.mem_imm+self.result) 
+                        m.d.sync += self.data_out.eq(Cat(self.regfile[self.address][0:8], Repl(self.regfile[self.address[31]],24)))
                         #self.write = 0b0
-                        m.d.sync += self.reg_addr_out.eq(self.reg_addr_in)
                     with m.Case(self.LHU):
                         m.d.comb += self.address.eq(self.mem_imm+self.result)
                         #self.write = 0b0 
-                        m.d.sync += self.data_out.eq(Cat(Repl(self.regfile[self.address[31]], 16), self.regfile[self.address[0:15]]))
-                        m.d.sync += self.reg_addr_out.eq(self.reg_addr_in)
-                        
-
-                    with m.Case(self.SB):
-                        m.d.comb += self.address.eq(self.mem_imm+self.result)
-                        #self.write = 0b1
-                        m.d.sync += self.regfile[self.address].eq(Cat(self.zeroes24, self.data_in[0:7]))
-                    with m.Case(self.SH):
-                        m.d.comb += self.address.eq(self.mem_imm+self.result)
-                        #self.write = 0b1
-                        m.d.sync += self.regfile[self.address].eq(Cat(self.zeroes16, self.data_in[0:15]))
-                    with m.Case(self.SW):
-                        m.d.comb += self.address.eq(self.mem_imm+self.result)
-                        #self.write = 0b1
-                        m.d.sync += self.regfile[self.address].eq(self.data_in)
+                        m.d.sync += self.data_out.eq(Cat(self.regfile[self.address[0:16], Repl(self.regfile[self.address[31]], 16)]))
                         
                     #other instructions in which memory block won't be used
                     with m.Case(self.ADDI):
@@ -159,6 +149,23 @@ class Memory_stage(Elaboratable):
                     with m.Case(self.SRAI):
                         m.d.sync += self.data_copy.eq(self.result)
                         #self.write = 0b0
+                        
+                        
+            with m.Case(self.S_type):
+                with m.Switch(self.inst_type2):
+                    with m.Case(self.SB):
+                        m.d.comb += self.address.eq(self.mem_imm+self.result)
+                        #self.write = 0b1
+                        m.d.sync += self.regfile[self.address].eq(Cat(self.data_in[0:8], Const(0x000000)))
+                    with m.Case(self.SH):
+                        m.d.comb += self.address.eq(self.mem_imm+self.result)
+                        #self.write = 0b1
+                        m.d.sync += self.regfile[self.address].eq(Cat(self.data_in[0:16], Const(0x0000)))
+                    with m.Case(self.SW):
+                        m.d.comb += self.address.eq(self.mem_imm+self.result)
+                        #self.write = 0b1
+                        m.d.sync += self.regfile[self.address].eq(self.data_in)   
+                                 
             
             #other instructions in which memory block won't be used
             with m.Case(self.R_type): 
@@ -192,7 +199,7 @@ class Memory_stage(Elaboratable):
                         #self.write = 0b0
                     with m.Case(self.AND):
                         m.d.sync += self.data_copy.eq(self.result)
-                        #self.write = 0b0                
+                        #self.write = 0b0                    
         return m   
     
     def ports(self)->List[Signal]:
@@ -200,15 +207,11 @@ class Memory_stage(Elaboratable):
             self.data_in,
             self.mem_imm,
             self.result,
-            self.address,
             self.reg_addr_in,
             self.inst_type,
             self.inst_type1,
             self.inst_type2,
             self.inst_type3,
-            self.zeroes16,
-            self.zeroes24,
-            self.regfile,
             self.reg_addr_out,
             self.data_out,
             self.data_copy,
@@ -222,7 +225,6 @@ if __name__ == "__main__":
     m.domains.sync = sync = ClockDomain("sync", async_reset=True)
     m.submodules.memory_stage = memory_stage  = Memory_stage()
     
-    
     data_in = Signal(32) # data written to memory
     result = Signal(32)  # ALU ka result
     mem_imm = Signal(32)
@@ -232,17 +234,7 @@ if __name__ == "__main__":
     inst_type1 = Signal(11)  # 11 bit opcode + funct3 + funct7
     inst_type2 = Signal(10)  # 10 bit opcode + funct3
     inst_type3 = Signal(7)  # 7 bit opcode
-
-    regfile = Array([Signal(32) for i in range(16)])
-    zeroes24 = Signal(24)
-    zeroes16 = Signal(16)
-    address = Signal(32)
-
-    m.d.sync +=memory_stage.address.eq(address)
-    m.d.sync += memory_stage.zeroes24.eq(zeroes24)
-    m.d.sync += memory_stage.zeroes16.eq(zeroes16)    
-    for i in range(16):
-        m.d.sync += memory_stage.regfile[i].eq(regfile[i])
+   
     
     m.d.sync += memory_stage.data_in.eq(data_in)
     m.d.sync += memory_stage.result.eq(result)
@@ -254,29 +246,29 @@ if __name__ == "__main__":
     m.d.sync += memory_stage.inst_type2.eq(inst_type2)
     m.d.sync += memory_stage.inst_type3.eq(inst_type3)
     
-    
     sim = Simulator(m)
     sim.add_clock(1e-6, domain="sync")
 
     def process():
-        yield regfile[1].eq(0x00000001)
-        yield regfile[2].eq(0x00000002)
-        yield regfile[3].eq(0x00000003)
-        yield regfile[4].eq(0x00000004)
-        yield regfile[5].eq(0x00000005)
-        yield regfile[6].eq(0x00000006)
+        #yield regfile[1].eq(0x00000001)
+        #yield regfile[2].eq(0x00000002)
+        #yield regfile[3].eq(0x00000003)
+        #yield regfile[4].eq(0x00000004)
+        #yield regfile[5].eq(0x00000005)
+        #yield regfile[6].eq(0x00000006)
         
 
-        yield zeroes24.eq(0x000000)
-        yield zeroes16.eq(0x0000)
+        #yield zeroes24.eq(0x000000)
+        #yield zeroes16.eq(0x0000)
         
         yield data_in.eq(0x00000004)
         yield result.eq(0x00000005)
         yield mem_imm.eq(0x00000001)
         yield reg_addr_in.eq(0b00001)
+        yield data_in.eq(0xBBBBBBBB)
         
-        yield inst_type.eq(0b001)        
-        yield inst_type2.eq(0b0100000011) # load word is the instruction here
+        yield inst_type.eq(0b011)        
+        yield inst_type2.eq(0b0000100011) # load byte is the instruction here
         
         #yield Delay(1e-6)
 
@@ -286,14 +278,6 @@ sim.add_sync_process(process,domain = "sync")
 with sim.write_vcd("test_1.vcd","test_1.gtkw",traces=[data_in, mem_imm, result, reg_addr_in, inst_type, inst_type1, inst_type2, inst_type3]+memory_stage.ports()):
     sim.run_until(100e-6, run_passive=True)                              
                                                     
-
-#[data_in, mem_imm, result, reg_addr, inst_type, inst_type1, inst_type2, inst_type3]
-                            
-                                                        
-                        
- #m.d.sync += mem[addr].eq(data)
-     #m.d.sync += data_out.eq(mem[addr])                                           
-                            
                         
                             
                             
